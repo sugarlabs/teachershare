@@ -278,7 +278,7 @@ class _ShareMenu(MenuItem):
         jobject.metadata['shared_by'] = json.dumps(get_user_data())
 
         if jobject and jobject.file_path:
-            tmp_path = os.path.join(self._activity_root, 'instance')
+            tmp_path = '/tmp'
             logging.error('temp_path %s', tmp_path)
             packaged_file_path = package_ds_object(jobject, tmp_path)
             url = 'ws://%s:%d/websocket/upload' % (self.ip, self.port)
@@ -315,9 +315,9 @@ class Uploader(GObject.GObject):
         self._chunk = str(self._file.read(CHUNK_SIZE))
 
     def start(self):
-        upload_looop = Thread(target=self._ws.run_forever)
-        upload_looop.setDaemon(True)
-        upload_looop.start()
+        upload_loop = Thread(target=self._ws.run_forever)
+        upload_loop.setDaemon(True)
+        upload_loop.start()
 
     def _on_open(self, ws):
         if self._chunk != '':

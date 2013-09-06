@@ -113,12 +113,15 @@ class _RefreshMenu(MenuItem):
     __gsignals__ = {
         'transfer-state-changed': (GObject.SignalFlags.RUN_FIRST, None,
                                    ([str])),
+        'comments-changed': (GObject.SignalFlags.RUN_FIRST, None, ([str]))
     }
 
     def __init__(self, webaccount, is_active):
         MenuItem.__init__(self, ACCOUNT_NAME)
 
         self._account = webaccount
+        self._is_active = is_active
+
         self.set_image(Icon(icon_name=ACCOUNT_ICON,
                             icon_size=Gtk.IconSize.MENU))
         self.show()
@@ -128,12 +131,16 @@ class _RefreshMenu(MenuItem):
         # TODO: grab comments back from the teacher
         # self.connect('activate', self.__refresh_menu_cb)
 
+    def set_metadata(self, metadata):
+        self._metadata = metadata
+
 
 class _ShareMenu(MenuItem):
     __gsignals__ = {
         'joined': (GObject.SignalFlags.RUN_FIRST, None, ([])),
         'transfer-state-changed': (GObject.SignalFlags.RUN_FIRST, None,
                                    ([str])),
+        'comments-changed': (GObject.SignalFlags.RUN_FIRST, None, ([str]))
     }
 
     def __init__(self, webaccount, get_uid_list, is_active):
@@ -205,15 +212,8 @@ class _ShareMenu(MenuItem):
                       _('Cannot join Journal Share activity'))
             return
 
-        self._complete_join()
-
-    # Once we have joined the activity, we mimic
-    # JournalShare activity.py and utils.py
-
-    def _complete_join(self):
-        """Callback for when a shared activity is joined.
-        Get the shared tube from another participant.
-        """
+        # Once we have joined the activity, we mimic
+        # JournalShare activity.py
         self._watch_for_tubes()
         GObject.idle_add(self._get_view_information)
 
@@ -222,13 +222,13 @@ class _ShareMenu(MenuItem):
         tubes_chan = self._shared_activity.telepathy_tubes_chan
         logging.debug(tubes_chan)
         tubes_chan[telepathy.CHANNEL_TYPE_TUBES].connect_to_signal(
-            'NewTube', self._new_tube_cb)
+            'NewTube', self.__new_tube_cb)
         tubes_chan[telepathy.CHANNEL_TYPE_TUBES].ListTubes(
-            reply_handler=self._list_tubes_reply_cb,
-            error_handler=self._list_tubes_error_cb)
+            reply_handler=self.__list_tubes_reply_cb,
+            error_handler=self.__list_tubes_error_cb)
 
-    def _new_tube_cb(self, tube_id, initiator, tube_type, service, params,
-                     state):
+    def __new_tube_cb(self, tube_id, initiator, tube_type, service, params,
+                      state):
         """Callback when a new tube becomes available."""
         logging.debug('New tube: ID=%d initator=%d type=%d service=%s '
                       'params=%r state=%d', tube_id, initiator, tube_type,
@@ -238,12 +238,12 @@ class _ShareMenu(MenuItem):
             self._account.unused_download_tubes.add(tube_id)
             GObject.idle_add(self._get_view_information)
 
-    def _list_tubes_reply_cb(self, tubes):
+    def __list_tubes_reply_cb(self, tubes):
         """Callback when new tubes are available."""
         for tube_info in tubes:
-            self._new_tube_cb(*tube_info)
+            self.__new_tube_cb(*tube_info)
 
-    def _list_tubes_error_cb(self, e):
+    def __list_tubes_error_cb(self, e):
         """Handle ListTubes error by logging."""
         logging.error('ListTubes() failed: %s', e)
         self.emit('transfer-state-changed', _('Cannot upload now'))
@@ -283,23 +283,51 @@ class _ShareMenu(MenuItem):
 
         metadata = self._get_metadata()
 
-        jobject = datastore.get(metadata['uid'])
-        # add the information about the user uploading this object
-        jobject.metadata['shared_by'] = json.dumps(get_user_data())
+        self._jobject = datastore.get(metadata['uid'])
+        # Add the information about the user uploading this object
+        user_data = get_user_data()
+        self._jobject.metadata['shared_by'] = json.dumps(user_data)
+        # And add a comment to the Journal entry
+        if 'comments' in self._jobject.metadata:
+            comments = json.loads(self._jobject.metadata['comments'])
+        else:
+            comments = []
+        comments.append({'from':user_data['from'],
+                         'message':_('I shared this.'),
+                         'icon-color':'[%s,%s]' % (
+                             user_data['icon'][0], user_data['icon'][1])})
+        self._jobject.metadata['comments'] = json.dumps(comments)
 
-        if jobject and jobject.file_path:
+        if self._jobject and self._jobject.file_path:
             tmp_path = '/tmp'
-            packaged_file_path = package_ds_object(jobject, tmp_path)
+            packaged_file_path = package_ds_object(self._jobject, tmp_path)
             url = 'ws://%s:%d/websocket/upload' % (ip, port)
             uploader = Uploader(packaged_file_path, url)
             uploader.connect('uploaded', self.__uploaded_cb)
-            self.emit('transfer-state-changed', _('Upload started'))
+            GObject.idle_add(self.emit, 'transfer-state-changed',
+                             _('Upload started'))
             uploader.start()
 
         return False
 
-    def __uploaded_cb(self, uploader):
-        self.emit('transfer-state-changed', _('Upload completed'))
+    def __uploaded_cb(self, uploader, xfer_successful):
+        if xfer_successful:
+            datastore.write(self._jobject,
+                            update_mtime=False,
+                            reply_handler=self.__datastore_write_cb,
+                            error_handler=self.__datastore_write_error_cb)
+            GObject.idle_add(self.emit, 'transfer-state-changed',
+                             _('Upload completed'))
+            self.emit('comments-changed', self._jobject.metadata['comments'])
+        else:
+            GObject.idle_add(self.emit, 'transfer-state-changed',
+                             _('Upload failed'))
+
+    def __datastore_write_cb(self):
+        logging.debug('saved changes to local datastore')
+
+    def __datastore_write_error_cb(self, error):
+        logging.error('datastore_write_error_cb: %r' % error)
 
 
 # From JournalShare/utils.py
@@ -308,7 +336,7 @@ class _ShareMenu(MenuItem):
 class Uploader(GObject.GObject):
 
     __gsignals__ = {
-        'uploaded': (GObject.SignalFlags.RUN_FIRST, None, ([])),
+        'uploaded': (GObject.SignalFlags.RUN_FIRST, None, ([bool])),
         'transfer-state-changed': (GObject.SignalFlags.RUN_FIRST, None,
                                    ([str]))
     }
@@ -347,11 +375,11 @@ class Uploader(GObject.GObject):
             self._ws.close()
 
     def _on_error(self, ws, error):
-        self.emit('transfer-state-changed', _('Upload failed'))
+        self.emit('transfer-state-changed', _('Upload failed'), False)
 
     def _on_close(self, ws):
         self._file.close()
-        GObject.idle_add(self.emit, 'uploaded')
+        GObject.idle_add(self.emit, 'uploaded', True)
 
 
 def get_user_data():
@@ -366,6 +394,10 @@ def get_user_data():
     data = {}
     data['from'] = profile.get_nick_name()
     data['icon'] = [xo_color.get_stroke_color(), xo_color.get_fill_color()]
+    if isinstance(data['icon'][0], unicode):
+        data['icon'][0] = data['icon'][0].encode('ascii', 'replace')
+    if isinstance(data['icon'][1], unicode):
+        data['icon'][1] = data['icon'][1].encode('ascii', 'replace')
     return data
 
 

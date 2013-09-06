@@ -42,7 +42,7 @@ from sugar3 import profile
 
 from jarabe.journal import journalwindow
 from jarabe.journal import model
-from jarabe.webservice import account, accountsmanager
+from jarabe.webservice import account
 from jarabe.model import neighborhood
 
 ACCOUNT_NAME = _('Teacher')
@@ -55,8 +55,6 @@ CHUNK_SIZE = 2048
 class Account(account.Account):
 
     def __init__(self):
-        logging.error('ShareAccount.__init__')
-        self._share_service = accountsmanager.get_service('share')
         self._shared_journal_entry = None
         self._model = neighborhood.get_model()
         self._unused_download_tubes = set()
@@ -68,7 +66,6 @@ class Account(account.Account):
         return self.STATE_VALID
 
     def get_shared_journal_entry(self):
-        logging.error('ShareAccount.get_shared_journal_entry')
         if self._shared_journal_entry is None:
             self._shared_journal_entry = _SharedJournalEntry(self)
         return self._shared_journal_entry
@@ -81,12 +78,10 @@ class _SharedJournalEntry(account.SharedJournalEntry):
     }
 
     def __init__(self, account):
-        logging.error('SharedJournalEntry.__init__')
         self._account = account
         self._alert = None
 
     def get_share_menu(self, get_uid_list):
-        logging.error('SharedJournalEntry.get_share_menu')
         menu = _ShareMenu(self._account, get_uid_list, True)
         self._connect_transfer_signals(menu)
         return menu
@@ -119,7 +114,6 @@ class _ShareMenu(MenuItem):
     def __init__(self, account, get_uid_list, is_active):
         MenuItem.__init__(self, ACCOUNT_NAME)
 
-        logging.error('ShareMenu.__init__')
         self._account = account
         self._activity_id = None
 
@@ -135,7 +129,6 @@ class _ShareMenu(MenuItem):
         self.connect('activate', self.__share_menu_cb)
 
     def _get_shared_activity_model(self):
-        logging.error('ShareMenu._get_shared_activity_model')
         for activity_model in self._account._model.get_activities():
             logging.debug(activity_model.bundle.get_bundle_id())
             if activity_model.bundle.get_bundle_id() == TARGET:
@@ -146,11 +139,9 @@ class _ShareMenu(MenuItem):
         return False
 
     def _get_metadata(self):
-        logging.error('ShareMenu._get_metadata')
         return model.get(self._get_uid_list()[0])
 
     def __share_menu_cb(self, menu_item):
-        logging.error('ShareMenu._share_menu_cb')
         pservice = presenceservice.get_instance()
         if self._activity_id is not None:
             mesh_instance = pservice.get_activity(self._activity_id,
@@ -167,7 +158,6 @@ class _ShareMenu(MenuItem):
     # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
 
     def _set_up_sharing(self, mesh_instance):
-        logging.error('ShareMenu._set_up_sharing')
         logging.error('*** Act %s, mesh instance %r',
                       self._activity_id, mesh_instance)
         # There's already an instance on the mesh, join it
@@ -181,30 +171,26 @@ class _ShareMenu(MenuItem):
 
     def __joined_cb(self, activity, success, err):
         """Callback when join has finished"""
-        logging.error('ShareMenu.__joined_cb %r', success)
         self.shared_activity.disconnect(self._join_id)
         self._join_id = None
         if not success:
             logging.debug('Failed to join activity: %s', err)
             return
 
-        logging.error('calling local joined_cb')
-        self._joined_cb()
+        self._complete_join()
 
     # Once we have joined the activity, we mimic
     # JournalShare activity.py and utils.py
 
-    def _joined_cb(self):
+    def _complete_join(self):
         """Callback for when a shared activity is joined.
         Get the shared tube from another participant.
         """
-        logging.error('ShareMenu._joined_cb')
         self._watch_for_tubes()
         GObject.idle_add(self._get_view_information)
 
     def _watch_for_tubes(self):
         """Watch for new tubes."""
-        logging.error('ShareMenu._watch_for_tubes')
         tubes_chan = self.shared_activity.telepathy_tubes_chan
         logging.error(tubes_chan)
         tubes_chan[telepathy.CHANNEL_TYPE_TUBES].connect_to_signal(
@@ -216,7 +202,6 @@ class _ShareMenu(MenuItem):
     def _new_tube_cb(self, tube_id, initiator, tube_type, service, params,
                      state):
         """Callback when a new tube becomes available."""
-        logging.error('ShareMenu._new_tube_cb')
         logging.error('New tube: ID=%d initator=%d type=%d service=%s '
                       'params=%r state=%d', tube_id, initiator, tube_type,
                       service, params, state)
@@ -228,7 +213,6 @@ class _ShareMenu(MenuItem):
 
     def _list_tubes_reply_cb(self, tubes):
         """Callback when new tubes are available."""
-        logging.error('ShareMenu._list_tubes_reply_cb')
         for tube_info in tubes:
             self._new_tube_cb(*tube_info)
 
@@ -237,7 +221,6 @@ class _ShareMenu(MenuItem):
         logging.error('ListTubes() failed: %s', e)
 
     def _get_view_information(self):
-        logging.error('ShareMenu._get_view_information')
         # Pick an arbitrary tube we can try to connect to the server
         try:
             tube_id = self._account._unused_download_tubes.pop()
@@ -250,7 +233,6 @@ class _ShareMenu(MenuItem):
         return False
 
     def _set_view_url(self, tube_id):
-        logging.error('ShareMenu._set_view_url')
         chan = self.shared_activity.telepathy_tubes_chan
         iface = chan[telepathy.CHANNEL_TYPE_TUBES]
         addr = iface.AcceptStreamTube(
@@ -284,15 +266,12 @@ class _ShareMenu(MenuItem):
             url = 'ws://%s:%d/websocket/upload' % (self.ip, self.port)
             uploader = Uploader(packaged_file_path, url)
             uploader.connect('uploaded', self.__uploaded_cb)
-            # cursor = Gdk.Cursor.new(Gdk.CursorType.WATCH
-            # self.get_window().set_cursor(cursor)
             uploader.start()
 
         return False
 
     def __uploaded_cb(self, uploader):
         logging.error('ShareMenu._uploaded_cb')
-        # self.get_window().set_cursor(None)
 
 
 class Uploader(GObject.GObject):

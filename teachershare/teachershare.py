@@ -16,6 +16,6 @@
 # MA 02110-1301 USA.
 
 
-class Share():
+class TeacherShare():
     def __init__(self):
         return

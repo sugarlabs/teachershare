@@ -86,6 +86,11 @@ class _SharedJournalEntry(account.SharedJournalEntry):
         self._connect_transfer_signals(menu)
         return menu
 
+    def get_refresh_menu(self):
+        menu = _RefreshMenu(self._account, False)
+        self._connect_transfer_signals(menu)
+        return menu
+
     def _connect_transfer_signals(self, transfer_widget):
         transfer_widget.connect('transfer-state-changed',
                                 self.__display_alert_cb)
@@ -102,6 +107,26 @@ class _SharedJournalEntry(account.SharedJournalEntry):
     def __alert_response_cb(self, alert, response_id):
         journalwindow.get_journal_window().remove_alert(alert)
         self._alert = None
+
+
+class _RefreshMenu(MenuItem):
+    __gsignals__ = {
+        'transfer-state-changed': (GObject.SignalFlags.RUN_FIRST, None,
+                                   ([str])),
+    }
+
+    def __init__(self, webaccount, is_active):
+        MenuItem.__init__(self, ACCOUNT_NAME)
+
+        self._account = webaccount
+        self.set_image(Icon(icon_name=ACCOUNT_ICON,
+                            icon_size=Gtk.IconSize.MENU))
+        self.show()
+
+        self.set_sensitive(False)
+
+        # TODO: grab comments back from the teacher
+        # self.connect('activate', self.__refresh_menu_cb)
 
 
 class _ShareMenu(MenuItem):

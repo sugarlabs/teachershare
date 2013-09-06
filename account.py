@@ -57,7 +57,7 @@ class Account(account.Account):
     def __init__(self):
         self._shared_journal_entry = None
         self._model = neighborhood.get_model()
-        self._unused_download_tubes = set()
+        self.unused_download_tubes = set()
 
     def get_description(self):
         return ACCOUNT_NAME
@@ -77,8 +77,8 @@ class _SharedJournalEntry(account.SharedJournalEntry):
                                    ([str])),
     }
 
-    def __init__(self, account):
-        self._account = account
+    def __init__(self, webaccount):
+        self._account = webaccount
         self._alert = None
 
     def get_share_menu(self, get_uid_list):
@@ -111,11 +111,12 @@ class _ShareMenu(MenuItem):
                                    ([str])),
     }
 
-    def __init__(self, account, get_uid_list, is_active):
+    def __init__(self, webaccount, get_uid_list, is_active):
         MenuItem.__init__(self, ACCOUNT_NAME)
 
-        self._account = account
+        self._account = webaccount
         self._activity_id = None
+        self._shared_activity = None
 
         self.set_image(Icon(icon_name=ACCOUNT_ICON,
                             icon_size=Gtk.IconSize.MENU))
@@ -133,7 +134,7 @@ class _ShareMenu(MenuItem):
             logging.debug(activity_model.bundle.get_bundle_id())
             if activity_model.bundle.get_bundle_id() == TARGET:
                 self._activity_id = activity_model.activity_id
-                logging.error('Found %s in the neighborhood' %
+                logging.debug('Found %s in the neighborhood' %
                               (TARGET))
                 return True
         return False
@@ -148,33 +149,35 @@ class _ShareMenu(MenuItem):
                                                   warn_if_none=False)
         else:
             logging.error('Cannot get activity from pservice.')
+            self.emit('transfer-state-changed',
+                      _('Cannot join Journal Share activity'))
             return
 
         self._set_up_sharing(mesh_instance)
-
-        # TODO: Once sharing is set up, xfer the journal object
 
     # We set up sharing in the same way as
     # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
 
     def _set_up_sharing(self, mesh_instance):
-        logging.error('*** Act %s, mesh instance %r',
+        logging.debug('*** Act %s, mesh instance %r',
                       self._activity_id, mesh_instance)
         # There's already an instance on the mesh, join it
-        logging.error('*** Act %s joining existing mesh instance %r',
+        logging.debug('*** Act %s joining existing mesh instance %r',
                       self._activity_id, mesh_instance)
-        self.shared_activity = mesh_instance
-        
-        self._join_id = self.shared_activity.connect('joined',
-                                                     self.__joined_cb)
-        self.shared_activity.join()
+        self._shared_activity = mesh_instance
+
+        self._join_id = self._shared_activity.connect('joined',
+                                                      self.__joined_cb)
+        self._shared_activity.join()
 
     def __joined_cb(self, activity, success, err):
         """Callback when join has finished"""
-        self.shared_activity.disconnect(self._join_id)
+        self._shared_activity.disconnect(self._join_id)
         self._join_id = None
         if not success:
-            logging.debug('Failed to join activity: %s', err)
+            logging.error('Failed to join activity: %s', err)
+            self.emit('transfer-state-changed',
+                      _('Cannot join Journal Share activity'))
             return
 
         self._complete_join()
@@ -191,8 +194,8 @@ class _ShareMenu(MenuItem):
 
     def _watch_for_tubes(self):
         """Watch for new tubes."""
-        tubes_chan = self.shared_activity.telepathy_tubes_chan
-        logging.error(tubes_chan)
+        tubes_chan = self._shared_activity.telepathy_tubes_chan
+        logging.debug(tubes_chan)
         tubes_chan[telepathy.CHANNEL_TYPE_TUBES].connect_to_signal(
             'NewTube', self._new_tube_cb)
         tubes_chan[telepathy.CHANNEL_TYPE_TUBES].ListTubes(
@@ -202,13 +205,12 @@ class _ShareMenu(MenuItem):
     def _new_tube_cb(self, tube_id, initiator, tube_type, service, params,
                      state):
         """Callback when a new tube becomes available."""
-        logging.error('New tube: ID=%d initator=%d type=%d service=%s '
+        logging.debug('New tube: ID=%d initator=%d type=%d service=%s '
                       'params=%r state=%d', tube_id, initiator, tube_type,
                       service, params, state)
 
         if service == JOURNAL_STREAM_SERVICE:
-            logging.error('I could download from that tube')
-            self._account._unused_download_tubes.add(tube_id)
+            self._account.unused_download_tubes.add(tube_id)
             GObject.idle_add(self._get_view_information)
 
     def _list_tubes_reply_cb(self, tubes):
@@ -219,39 +221,40 @@ class _ShareMenu(MenuItem):
     def _list_tubes_error_cb(self, e):
         """Handle ListTubes error by logging."""
         logging.error('ListTubes() failed: %s', e)
+        self.emit('transfer-state-changed', _('Cannot upload now'))
 
     def _get_view_information(self):
         # Pick an arbitrary tube we can try to connect to the server
         try:
-            tube_id = self._account._unused_download_tubes.pop()
+            tube_id = self._account.unused_download_tubes.pop()
         except (ValueError, KeyError), e:
             logging.error('No tubes to connect from right now: %s',
                           e)
+            self.emit('transfer-state-changed', _('Cannot upload now'))
             return False
 
         GObject.idle_add(self._set_view_url, tube_id)
         return False
 
     def _set_view_url(self, tube_id):
-        chan = self.shared_activity.telepathy_tubes_chan
+        chan = self._shared_activity.telepathy_tubes_chan
         iface = chan[telepathy.CHANNEL_TYPE_TUBES]
         addr = iface.AcceptStreamTube(
             tube_id,
             telepathy.SOCKET_ADDRESS_TYPE_IPV4,
             telepathy.SOCKET_ACCESS_CONTROL_LOCALHOST, 0,
             utf8_strings=True)
-        logging.error('Accepted stream tube: listening address is %r', addr)
+        logging.debug('Accepted stream tube: listening address is %r', addr)
         # SOCKET_ADDRESS_TYPE_IPV4 is defined to have addresses of type '(sq)'
         assert isinstance(addr, dbus.Struct)
         assert len(addr) == 2
         assert isinstance(addr[0], str)
         assert isinstance(addr[1], (int, long))
         assert addr[1] > 0 and addr[1] < 65536
-        self.ip = addr[0]
-        self.port = int(addr[1])
+        ip = addr[0]
+        port = int(addr[1])
 
-        logging.error('http://%s:%d/web/index.html' %
-                           (self.ip, self.port))
+        logging.debug('http://%s:%d/web/index.html' % (ip, port))
 
         metadata = self._get_metadata()
 
@@ -261,26 +264,33 @@ class _ShareMenu(MenuItem):
 
         if jobject and jobject.file_path:
             tmp_path = '/tmp'
-            logging.error('temp_path %s', tmp_path)
             packaged_file_path = package_ds_object(jobject, tmp_path)
-            url = 'ws://%s:%d/websocket/upload' % (self.ip, self.port)
+            url = 'ws://%s:%d/websocket/upload' % (ip, port)
             uploader = Uploader(packaged_file_path, url)
             uploader.connect('uploaded', self.__uploaded_cb)
+            self.emit('transfer-state-changed', _('Upload started'))
             uploader.start()
 
         return False
 
     def __uploaded_cb(self, uploader):
-        logging.error('ShareMenu._uploaded_cb')
+        self.emit('transfer-state-changed', _('Upload completed'))
+
+
+# From JournalShare/utils.py
 
 
 class Uploader(GObject.GObject):
 
-    __gsignals__ = {'uploaded': (GObject.SignalFlags.RUN_FIRST, None, ([]))}
+    __gsignals__ = {
+        'uploaded': (GObject.SignalFlags.RUN_FIRST, None, ([])),
+        'transfer-state-changed': (GObject.SignalFlags.RUN_FIRST, None,
+                                   ([str]))
+    }
 
     def __init__(self, file_path, url):
         GObject.GObject.__init__(self)
-        logging.error('websocket url %s', url)
+        logging.debug('websocket url %s', url)
         # base64 encode the file
         self._file = tempfile.TemporaryFile(mode='r+')
         base64.encode(open(file_path, 'r'), self._file)
@@ -312,8 +322,7 @@ class Uploader(GObject.GObject):
             self._ws.close()
 
     def _on_error(self, ws, error):
-        #self._ws.send(self._chunk)
-        pass
+        self.emit('transfer-state-changed', _('Upload failed'))
 
     def _on_close(self, ws):
         self._file.close()
@@ -341,10 +350,10 @@ def package_ds_object(dsobj, destination_path):
     the preview and the metadata
     """
     object_id = dsobj.object_id
-    logging.error('id %s', object_id)
+    logging.debug('id %s', object_id)
     preview_path = None
 
-    logging.error('before preview')
+    logging.debug('before preview')
     if 'preview' in dsobj.metadata:
         # TODO: copied from expandedentry.py
         # is needed because record is saving the preview encoded
@@ -360,7 +369,7 @@ def package_ds_object(dsobj, destination_path):
         preview_file.write(preview)
         preview_file.close()
 
-    logging.error('before metadata')
+    logging.debug('before metadata')
     # create file with the metadata
     metadata_path = os.path.join(destination_path,
                                  'metadata_id_' + object_id)
@@ -374,7 +383,7 @@ def package_ds_object(dsobj, destination_path):
     metadata_file.write(json.dumps(metadata))
     metadata_file.close()
 
-    logging.error('before create zip')
+    logging.debug('before create zip')
 
     # create a zip fileincluding metadata and preview
     # to be read from the web server
@@ -389,5 +398,4 @@ def package_ds_object(dsobj, destination_path):
 
 
 def get_account():
-    logging.error('ShareAccount: get_account()')
     return Account()

@@ -177,26 +177,20 @@ class _ShareMenu(MenuItem):
     def __share_menu_cb(self, menu_item):
         pservice = presenceservice.get_instance()
         if self._activity_id is not None:
-            mesh_instance = pservice.get_activity(self._activity_id,
-                                                  warn_if_none=False)
+            self._shared_activity = pservice.get_activity(self._activity_id,
+                                                          warn_if_none=False)
         else:
             logging.error('Cannot get activity from pservice.')
             self.emit('transfer-state-changed',
                       _('Cannot join Journal Share activity'))
             return
 
-        self._set_up_sharing(mesh_instance)
+        # We set up sharing in the same way as
+        # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
 
-    # We set up sharing in the same way as
-    # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
-
-    def _set_up_sharing(self, mesh_instance):
-        logging.debug('*** Act %s, mesh instance %r',
-                      self._activity_id, mesh_instance)
-        # There's already an instance on the mesh, join it
+        # There's already an instance on the mesh, so join it
         logging.debug('*** Act %s joining existing mesh instance %r',
-                      self._activity_id, mesh_instance)
-        self._shared_activity = mesh_instance
+                      self._activity_id, self._shared_activity)
 
         self._join_id = self._shared_activity.connect('joined',
                                                       self.__joined_cb)
@@ -246,7 +240,8 @@ class _ShareMenu(MenuItem):
     def __list_tubes_error_cb(self, e):
         """Handle ListTubes error by logging."""
         logging.error('ListTubes() failed: %s', e)
-        self.emit('transfer-state-changed', _('Cannot upload now'))
+        self.emit('transfer-state-changed',
+                  _('Cannot upload to Journal Share activity'))
 
     def _get_view_information(self):
         # Pick an arbitrary tube we can try to connect to the server
@@ -255,7 +250,8 @@ class _ShareMenu(MenuItem):
         except (ValueError, KeyError), e:
             logging.error('No tubes to connect from right now: %s',
                           e)
-            self.emit('transfer-state-changed', _('Cannot upload now'))
+            self.emit('transfer-state-changed',
+                  _('Cannot upload to Journal Share activity'))
             return False
 
         GObject.idle_add(self._set_view_url, tube_id)
@@ -394,10 +390,6 @@ def get_user_data():
     data = {}
     data['from'] = profile.get_nick_name()
     data['icon'] = [xo_color.get_stroke_color(), xo_color.get_fill_color()]
-    if isinstance(data['icon'][0], unicode):
-        data['icon'][0] = data['icon'][0].encode('ascii', 'replace')
-    if isinstance(data['icon'][1], unicode):
-        data['icon'][1] = data['icon'][1].encode('ascii', 'replace')
     return data
 
 

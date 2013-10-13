@@ -163,7 +163,6 @@ class _ShareMenu(MenuItem):
 
     def _get_shared_activity_model(self):
         for activity_model in self._account._model.get_activities():
-            logging.debug(activity_model.bundle.get_bundle_id())
             if activity_model.bundle.get_bundle_id() == TARGET:
                 self._activity_id = activity_model.activity_id
                 logging.debug('Found %s in the neighborhood' %

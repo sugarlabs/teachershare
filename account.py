@@ -58,6 +58,7 @@ class Account(account.Account):
         self._shared_journal_entry = None
         self._model = neighborhood.get_model()
         self.unused_download_tubes = set()
+        self.url_cache = None
 
     def get_description(self):
         return ACCOUNT_NAME
@@ -84,6 +85,7 @@ class _SharedJournalEntry(account.SharedJournalEntry):
     def get_share_menu(self, get_uid_list):
         menu = _ShareMenu(self._account, get_uid_list, True)
         self._connect_transfer_signals(menu)
+        logging.debug('url cache: %s' % (self._account.url_cache))
         return menu
 
     def get_refresh_menu(self):
@@ -147,26 +149,33 @@ class _ShareMenu(MenuItem):
         MenuItem.__init__(self, ACCOUNT_NAME)
 
         self._account = webaccount
+        logging.debug('SHAREMENU INIT %s' % (self._account.url_cache))
         self._activity_id = None
         self._shared_activity = None
+        self._join_id = None
+        self._tubes_chan = None
 
         self.set_image(Icon(icon_name=ACCOUNT_ICON,
                             icon_size=Gtk.IconSize.MENU))
         self.show()
 
-        self.set_sensitive(self._get_shared_activity_model())
+        self.set_sensitive(self.get_shared_activity_model())
 
         self._get_uid_list = get_uid_list
 
         # In this callback join the Journal Share activity
         self.connect('activate', self.__share_menu_cb)
 
-    def _get_shared_activity_model(self):
+    def get_shared_activity_model(self):
+        if self._account.url_cache is not None:
+            logging.debug('reusing cached url')
+            return True
+
         for activity_model in self._account._model.get_activities():
+            logging.debug(activity_model.bundle.get_bundle_id())
             if activity_model.bundle.get_bundle_id() == TARGET:
                 self._activity_id = activity_model.activity_id
-                logging.debug('Found %s in the neighborhood' %
-                              (TARGET))
+                logging.debug('Found %s in the neighborhood' % (TARGET))
                 return True
         return False
 
@@ -174,29 +183,34 @@ class _ShareMenu(MenuItem):
         return model.get(self._get_uid_list()[0])
 
     def __share_menu_cb(self, menu_item):
-        pservice = presenceservice.get_instance()
-        if self._activity_id is not None:
-            self._shared_activity = pservice.get_activity(self._activity_id,
-                                                          warn_if_none=False)
+        if self._account.url_cache is None:
+            pservice = presenceservice.get_instance()
+            if self._activity_id is not None:
+                logging.debug('getting shared activity from activity id')
+                self._shared_activity = pservice.get_activity(
+                    self._activity_id, warn_if_none=False)
+            else:
+                logging.error('Cannot get activity from pservice.')
+                self.emit('transfer-state-changed',
+                          _('Cannot join Journal Share activity'))
+                return
+
+            # We set up sharing in the same way as
+            # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
+
+            # There's already an instance on the mesh, so join it
+            logging.debug('*** Act %s joining existing mesh instance %r',
+                          self._activity_id, self._shared_activity)
+            self._join_id = self._shared_activity.connect('joined',
+                                                          self.__joined_cb)
+            self._shared_activity.join()
         else:
-            logging.error('Cannot get activity from pservice.')
-            self.emit('transfer-state-changed',
-                      _('Cannot join Journal Share activity'))
-            return
-
-        # We set up sharing in the same way as
-        # sugar-toolkit-gtk3/src/sugar3/activity/activity.py
-
-        # There's already an instance on the mesh, so join it
-        logging.debug('*** Act %s joining existing mesh instance %r',
-                      self._activity_id, self._shared_activity)
-
-        self._join_id = self._shared_activity.connect('joined',
-                                                      self.__joined_cb)
-        self._shared_activity.join()
+            logging.debug('skipping join setup')
+            self.__joined_cb(self, True, '')
 
     def __joined_cb(self, activity, success, err):
         """Callback when join has finished"""
+        '''
         self._shared_activity.disconnect(self._join_id)
         self._join_id = None
         if not success:
@@ -204,19 +218,20 @@ class _ShareMenu(MenuItem):
             self.emit('transfer-state-changed',
                       _('Cannot join Journal Share activity'))
             return
-
+        '''
         # Once we have joined the activity, we mimic
         # JournalShare activity.py
-        self._watch_for_tubes()
+        if self._account.url_cache is None:
+            self._watch_for_tubes()
         GObject.idle_add(self._get_view_information)
 
     def _watch_for_tubes(self):
         """Watch for new tubes."""
-        tubes_chan = self._shared_activity.telepathy_tubes_chan
-        logging.debug(tubes_chan)
-        tubes_chan[telepathy.CHANNEL_TYPE_TUBES].connect_to_signal(
+        self._tubes_chan = self._shared_activity.telepathy_tubes_chan
+        logging.debug(self._tubes_chan)
+        self._tubes_chan[telepathy.CHANNEL_TYPE_TUBES].connect_to_signal(
             'NewTube', self.__new_tube_cb)
-        tubes_chan[telepathy.CHANNEL_TYPE_TUBES].ListTubes(
+        self._tubes_chan[telepathy.CHANNEL_TYPE_TUBES].ListTubes(
             reply_handler=self.__list_tubes_reply_cb,
             error_handler=self.__list_tubes_error_cb)
 
@@ -244,37 +259,43 @@ class _ShareMenu(MenuItem):
 
     def _get_view_information(self):
         # Pick an arbitrary tube we can try to connect to the server
-        try:
-            tube_id = self._account.unused_download_tubes.pop()
-        except (ValueError, KeyError), e:
-            logging.error('No tubes to connect from right now: %s',
-                          e)
-            self.emit('transfer-state-changed',
-                  _('Cannot upload to Journal Share activity'))
-            return False
+        if self._account.url_cache is None:
+            try:
+                tube_id = self._account.unused_download_tubes.pop()
+            except (ValueError, KeyError), e:
+                logging.error('No tubes to connect from right now: %s',
+                              e)
+                self.emit('transfer-state-changed',
+                          _('Cannot upload to Journal Share activity'))
+                return False
+        else:
+            tube_id = None
 
         GObject.idle_add(self._set_view_url, tube_id)
         return False
 
     def _set_view_url(self, tube_id):
-        chan = self._shared_activity.telepathy_tubes_chan
-        iface = chan[telepathy.CHANNEL_TYPE_TUBES]
-        addr = iface.AcceptStreamTube(
-            tube_id,
-            telepathy.SOCKET_ADDRESS_TYPE_IPV4,
-            telepathy.SOCKET_ACCESS_CONTROL_LOCALHOST, 0,
-            utf8_strings=True)
-        logging.debug('Accepted stream tube: listening address is %r', addr)
-        # SOCKET_ADDRESS_TYPE_IPV4 is defined to have addresses of type '(sq)'
-        assert isinstance(addr, dbus.Struct)
-        assert len(addr) == 2
-        assert isinstance(addr[0], str)
-        assert isinstance(addr[1], (int, long))
-        assert addr[1] > 0 and addr[1] < 65536
-        ip = addr[0]
-        port = int(addr[1])
+        if self._account.url_cache is None:
+            chan = self._shared_activity.telepathy_tubes_chan
+            iface = chan[telepathy.CHANNEL_TYPE_TUBES]
+            addr = iface.AcceptStreamTube(
+                tube_id,
+                telepathy.SOCKET_ADDRESS_TYPE_IPV4,
+                telepathy.SOCKET_ACCESS_CONTROL_LOCALHOST, 0,
+                utf8_strings=True)
+            logging.debug('Accepted stream tube: listening address is %r',
+                          addr)
+            # SOCKET_ADDRESS_TYPE_IPV4 is defined to have addresses of
+            # type '(sq)'
+            assert isinstance(addr, dbus.Struct)
+            assert len(addr) == 2
+            assert isinstance(addr[0], str)
+            assert isinstance(addr[1], (int, long))
+            assert addr[1] > 0 and addr[1] < 65536
+            ip = addr[0]
+            port = int(addr[1])
 
-        logging.debug('http://%s:%d/web/index.html' % (ip, port))
+            logging.debug('http://%s:%d/web/index.html' % (ip, port))
 
         metadata = self._get_metadata()
 
@@ -287,20 +308,24 @@ class _ShareMenu(MenuItem):
             comments = json.loads(self._jobject.metadata['comments'])
         else:
             comments = []
-        comments.append({'from':user_data['from'],
-                         'message':_('I shared this.'),
-                         'icon-color':'[%s,%s]' % (
+        comments.append({'from': user_data['from'],
+                         'message': _('I shared this.'),
+                         'icon-color': '[%s,%s]' % (
                              user_data['icon'][0], user_data['icon'][1])})
         self._jobject.metadata['comments'] = json.dumps(comments)
 
         if self._jobject and self._jobject.file_path:
             tmp_path = '/tmp'
             packaged_file_path = package_ds_object(self._jobject, tmp_path)
-            url = 'ws://%s:%d/websocket/upload' % (ip, port)
+            if self._account.url_cache is None:
+                url = 'ws://%s:%d/websocket/upload' % (ip, port)
+                self._account.url_cache = url
+            else:
+                url = self._account.url_cache
+            logging.debug('url is %s' % (url))
             uploader = Uploader(packaged_file_path, url)
             uploader.connect('uploaded', self.__uploaded_cb)
-            GObject.idle_add(self.emit, 'transfer-state-changed',
-                             _('Upload started'))
+            self.emit('transfer-state-changed', _('Upload started'))
             uploader.start()
 
         return False
@@ -311,12 +336,10 @@ class _ShareMenu(MenuItem):
                             update_mtime=False,
                             reply_handler=self.__datastore_write_cb,
                             error_handler=self.__datastore_write_error_cb)
-            GObject.idle_add(self.emit, 'transfer-state-changed',
-                             _('Upload completed'))
+            self.emit('transfer-state-changed', _('Upload completed'))
             self.emit('comments-changed', self._jobject.metadata['comments'])
         else:
-            GObject.idle_add(self.emit, 'transfer-state-changed',
-                             _('Upload failed'))
+            self.emit('transfer-state-changed', _('Upload failed'))
 
     def __datastore_write_cb(self):
         logging.debug('saved changes to local datastore')

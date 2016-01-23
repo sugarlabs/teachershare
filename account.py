@@ -40,6 +40,11 @@ from sugar3.graphics.menuitem import MenuItem
 from sugar3.presence import presenceservice
 from sugar3 import profile
 
+try:
+    from sugar3.presence.wrapper import CollabWrapper
+except ImportError:
+    from textchannelwrapper import CollabWrapper
+
 from jarabe.journal import journalwindow
 from jarabe.journal import model
 from jarabe.webservice import account
@@ -50,6 +55,9 @@ ACCOUNT_ICON = 'female-7'
 TARGET = 'org.sugarlabs.JournalShare'
 JOURNAL_STREAM_SERVICE = 'journal-activity-http'
 CHUNK_SIZE = 2048
+
+JOIN_CMD = "j"
+CLOSE_CMD = "c"
 
 
 class Account(account.Account):
@@ -367,37 +375,36 @@ class Uploader(GObject.GObject):
         base64.encode(open(file_path, 'r'), self._file)
         self._file.seek(0)
 
-        self._ws = websocket.WebSocketApp(url,
-                                          on_open=self._on_open,
-                                          on_message=self._on_message,
-                                          on_error=self._on_error,
-                                          on_close=self._on_close)
+        self.buddies = {}
+
+        self.collab = CollabWrapper(self)
+        self.collab.message.connect(self._on_message)
+        self.collab.setup()
+
         self._chunk = str(self._file.read(CHUNK_SIZE))
 
+        self.start()
+
     def start(self):
-        upload_loop = Thread(target=self._ws.run_forever)
-        upload_loop.setDaemon(True)
-        upload_loop.start()
+        self.collab.send(JOIN_CMD, {"nick": profile.get_nick_name(), "chunk": self._chunk})
 
-    def _on_open(self, ws):
-        if self._chunk != '':
-            self._ws.send(self._chunk)
-        else:
-            self._ws.close()
+    def _on_message(self, collab, buddy, msg):
+        command = msg.get("cmd")
 
-    def _on_message(self, ws, message):
-        self._chunk = self._file.read(CHUNK_SIZE)
-        if self._chunk != '':
-            self._ws.send(self._chunk)
-        else:
-            self._ws.close()
+        if command == JOIN_CMD:
+            self.buddies[msg.get("nick")] = msg.get("chunk")
 
-    def _on_error(self, ws, error):
-        self.emit('transfer-state-changed', _('Upload failed'), False)
+        elif command == CLOSE_CMD:
+            del self.buddies[msg.get("nick")]
 
     def _on_close(self, ws):
         self._file.close()
+        self.send_event(CLOSE_CMD, {"nick": profile.get_nick_name(), "chunk": self._chunk})
         GObject.idle_add(self.emit, 'uploaded', True)
+
+    def send_event(self, msg, payload={}):
+        payload["cmd"] = msg
+        self.collab.post(payload)
 
 
 def get_user_data():
@@ -470,3 +477,4 @@ def package_ds_object(dsobj, destination_path):
 
 def get_account():
     return Account()
+
